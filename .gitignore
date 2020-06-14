@@ -1,0 +1,7 @@
+
+
+*~
+[Bb]uild/
+[Bb]uilds/
+*.o
+.depend
