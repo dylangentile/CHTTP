@@ -1,16 +1,17 @@
 #include "CHTTP/CHTTP.h"
+
 #include <stdlib.h>
-//#include "CHTTP/socket.h"
-
-/*
-void genericReply(CHTTP_http_server* server, CHTTP_request* req)
-{
-    CHTTP_response myResponse;
-
-    CHTTP_respond(server, req, &myResponse);
-}
-*/
 #include <stdio.h>
+
+const char hello[] = "Hello World!";
+
+void root(CHTTP_server* server, CHTTP_request* req, CHTTP_response* resp)
+{
+    resp->content = hello;
+    resp->contentLength = sizeof(hello);
+    resp->freeContent = false;
+}
+
 
 int main(void)
 {
@@ -32,11 +33,15 @@ int main(void)
         free(msg);
         }*/
 
-    CHTTP_http_server* server = CHTTP_http_server_allocate(8080);
+    CHTTP_server* server = CHTTP_server_allocate(8080);
+    CHTTP_addHandle(server, "/", &root);
+
+
     CHTTP_runServer(server);
 
+
     printf("Exiting...");
-    CHTTP_http_server_delete(server);
+    CHTTP_server_delete(server);
 
     return 0;
 }

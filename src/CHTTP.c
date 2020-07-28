@@ -13,9 +13,11 @@
 
 #else
 #include <poll.h>
-void poll_loop(CHTTP_http_server*);
+void poll_loop(CHTTP_server*);
 #endif
 
+
+//typedef void (*)(CHTTP_server*, CHTTP_request*) locationHandleType;
 
 
 bool gotInterrupt = false;
@@ -53,12 +55,12 @@ void sigint_handler(int s)
     gotInterrupt = true;
 }
 
-CHTTP_http_server*
-CHTTP_http_server_allocate(uint16_t port)
+CHTTP_server*
+CHTTP_server_allocate(uint16_t port)
 {
-    CHTTP_http_server* server = calloc(1, sizeof(CHTTP_http_server));
+    CHTTP_server* server = calloc(1, sizeof(CHTTP_server));
     server->port = port;
-    server->handle_map = calloc(1, sizeof(CHTTP_hash_map));
+    server->handle_map = CHTTP_hash_map_allocate(1024);
 
     if(methodMap == NULL)
     {
@@ -82,7 +84,7 @@ CHTTP_http_server_allocate(uint16_t port)
 }
 
 void
-CHTTP_http_server_delete(CHTTP_http_server* server)
+CHTTP_server_delete(CHTTP_server* server)
 {
     if(server != NULL)
     {
@@ -96,16 +98,16 @@ CHTTP_http_server_delete(CHTTP_http_server* server)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wpedantic"
 void
-CHTTP_addHandle(CHTTP_http_server* server, const char* location, void (*handle)(CHTTP_http_server*, CHTTP_request*))
+CHTTP_addHandle(CHTTP_server* server, const char* location, void (*handle)(CHTTP_server*, CHTTP_request*, CHTTP_response*))
 {
     CHTTP_hash_map_insert(server->handle_map, location, strlen(location),
-                          handle, sizeof(void (*)(CHTTP_http_server*, CHTTP_request*)));
+                          handle, sizeof(void (*)(CHTTP_server*, CHTTP_request*, CHTTP_response*)));
 }
 #pragma clang diagnostic pop
 
 
 void
-CHTTP_runServer(CHTTP_http_server* server)
+CHTTP_runServer(CHTTP_server* server)
 {
     CHTTP_socket thesock = CHTTP_socket_open(server->port);
     server->sock = (void*)&thesock;
@@ -140,41 +142,66 @@ CHTTP_runServer(CHTTP_http_server* server)
 void
 bad_request_handler(CHTTP_socket* sock)
 {
-    const char response[] = "HTTP/1.1 400 Bad Request\r\nServer: CHTTP\r\n";
+    const char response[] = "HTTP/1.1 400 Bad Request\r\nServer: CHTTP\r\nContent-Encoding: identity\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 12\r\nConnection: close\r\n\r\nBad Request!";
     CHTTP_socket_send(sock, response, sizeof(response));
 }
 
+bool fetch_block(char* buf, uint32_t bufsize, const char** ptr, char terminator)
+{
+    uint32_t bufloc = 0;
+    while(**ptr != '\0' && **ptr != terminator)
+    {
+        buf[bufloc++] = **ptr;
+        (*ptr)++;
+
+        if(bufloc == bufsize)
+        {
+            return false;
+        }
+    }
+
+    if(**ptr == '\0')
+    {
+        return false;
+    }
+
+    buf[bufloc++] = '\0';
+    return true;
+}
+
 void
-handle_request(CHTTP_socket* sock, const char* msg, uint32_t msglen)
+handle_404_not_found(CHTTP_socket* sock, CHTTP_request* req)
+{
+    const char format[] = "HTTP/1.1 404 Not Found\r\nServer: CHTTP\r\nContent-Encoding: identity\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %lu\r\nConnection: close\r\n\r\nCould Not find location: %s";
+
+    uint32_t len = snprintf(NULL, 0, format, strlen(req->location)+25, req->location);
+    char* response = calloc(len + 1, sizeof(char));
+
+    snprintf(response, len + 1, format, strlen(req->location)+25, req->location);
+    CHTTP_socket_send(sock, response, len + 1);
+
+}
+
+
+
+
+
+void
+handle_request(CHTTP_server* server, CHTTP_socket* sock, const char* msg, uint32_t msglen)
 {
     const int bufsize = 512;
     char buf[bufsize];
     uint32_t bufloc = 0;
-    uint32_t count = 0;
 
     const char* ptr = msg;
-    while(*ptr != '\0' && *ptr == ' ')
-    {
-        ptr++;
-    }
-
-
-    while(*ptr != '\0' && *ptr != ' ')
-    {
-        buf[bufloc++] = *ptr;
-        ptr++;
-        count++;
-    }
-
-    buf[bufloc++] = '\0';
-
-    if(*ptr == '\0')
+    if(!fetch_block(buf, bufsize, &ptr, ' '))
     {
         bad_request_handler(sock);
         return;
     }
+    ptr++;
 
-    CHTTP_Bucket* bucket = CHTTP_hash_map_find(methodMap, (const char*)buf, count);
+    CHTTP_Bucket* bucket = CHTTP_hash_map_find(methodMap, (const char*)buf, strlen((const char*)buf)); //don't include null terminator!
 
     if(bucket == NULL)
     {
@@ -186,13 +213,118 @@ handle_request(CHTTP_socket* sock, const char* msg, uint32_t msglen)
     memset(&req, 0, sizeof(CHTTP_request));
     req.method = *(HTTP_Method*)bucket->data;
     req.header_map = CHTTP_header_map_allocate();
+    req.GET = CHTTP_hash_map_allocate(128);
 
     memset(buf, 0, sizeof(char) * bufsize);
-    bufloc = 0;
 
-    bad_request_handler(sock);
+    if(!fetch_block(buf, bufsize, &ptr, ' '))
+    {
+        bad_request_handler(sock);
+        return;
+    }
+    ptr++;
+
+    char* location = calloc(strlen(buf) + 1, sizeof(char));
+    strcpy(location, buf);
+
+    req.location = (const char*)location;
+
+    while(!fetch_block(buf, bufsize, &ptr, '\n'))
+    {
+        bad_request_handler(sock);
+        goto defer;
+    }
+    ptr++;
+
+    if(strcmp((const char*) buf, "HTTP/1.1\r") != 0)
+    {
+        bad_request_handler(sock);
+        goto defer;
+    }
+
+    //printf("good!\n");
+    {
+        char buf2[bufsize];
+        memset(buf2, 0, bufsize);
+
+        while(*ptr != '\r' && *(ptr + 1) != '\n')
+        {
+            while(!fetch_block(buf, bufsize, &ptr, ':'))
+            {
+                bad_request_handler(sock);
+                goto defer;
+            }
+            ptr++;
+
+            while(*ptr == ' ') ptr++;
+
+            while(!fetch_block(buf2, bufsize, &ptr, '\n'))
+            {
+                bad_request_handler(sock);
+                goto defer;
+            }
+            ptr++;
+
+            char* ending = &buf2[strlen((const char*)buf2) - 1];
+            if(*ending == '\r') *ending = '\0'; //overwrite \r
+            CHTTP_header_map_insert(req.header_map, (const char*)buf, (const char*)buf2);
+        }
+    }
+    ptr += 2;
+
+    CHTTP_response resp;
+    memset(&resp, 0, sizeof(CHTTP_response));
+    resp.header_map = CHTTP_header_map_allocate();
+    resp.freeContent = true;
+
+    void (*handle)(CHTTP_server*, CHTTP_request*, CHTTP_response*);
+
+    bucket = CHTTP_hash_map_find(server->handle_map, req.location, strlen(req.location));
+    if(bucket == NULL)
+    {
+        handle_404_not_found(sock, &req);
+    }
+    else
+    {
+        handle = bucket->data;
+        (*handle)(server, &req, &resp);
+
+        int len = snprintf(NULL, 0, "%lu", resp.contentLength);
+        char* theLength = calloc(len + 1, sizeof(char));
+        snprintf(theLength, len + 1, "%lu", resp.contentLength);
+
+        const char* code = "HTTP/1.1 200 OK\r\n";
+
+        CHTTP_header_map_insert(resp.header_map, "Server", "CHTTP");
+        CHTTP_header_map_insert(resp.header_map, "Content-Encoding", "identity");
+        CHTTP_header_map_insert(resp.header_map, "Content-Type", "text/html; charset=utf-8");
+        CHTTP_header_map_insert(resp.header_map, "Content-Length", (const char*)theLength);
+        CHTTP_header_map_insert(resp.header_map, "Connection", "close");
+        char* header_str = CHTTP_header_map_generate(resp.header_map);
+
+        uint32_t n = snprintf(NULL, 0, "%s%s\r\n%s", code, (const char*)header_str, (const char*)resp.content);
+        char* responseBuffer = calloc(n + 1, sizeof(char));
+        snprintf(responseBuffer, n+1, "%s%s\r\n%s", code, (const char*)header_str, (const char*)resp.content);
+
+        CHTTP_socket_send(sock, responseBuffer, n+1);
+
+        free(header_str);
+        free(theLength);
+
+    }
 
 
+
+
+
+
+
+defer:
+    free(location);
+    CHTTP_header_map_delete(req.header_map);
+    CHTTP_hash_map_delete(req.GET);
+    CHTTP_header_map_delete(resp.header_map);
+    if(resp.freeContent) free(resp.content);
 
 }
 
@@ -244,7 +376,7 @@ void addSocketToPoll(CHTTP_socket* addme, CHTTP_socket** socket_array, struct po
     (*fd_count)++;
 }
 
-void poll_loop(CHTTP_http_server* server)
+void poll_loop(CHTTP_server* server)
 {
     CHTTP_socket* listener = server->sock;
     CHTTP_socket_listen(listener);
@@ -297,7 +429,7 @@ void poll_loop(CHTTP_http_server* server)
                     }
                     else
                     {
-                        handle_request(&(socketArray[i]), (const char*)req, reqlen);
+                        handle_request(server, &(socketArray[i]), (const char*)req, reqlen);
                     }
                 }
             }

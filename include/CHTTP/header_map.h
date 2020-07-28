@@ -1,3 +1,4 @@
+
 #ifndef CHTTP_header_map_h
 #define CHTTP_header_map_h
 
@@ -21,7 +22,7 @@ void CHTTP_header_map_insert(CHTTP_header_map*, const char* key, const char* val
 
 //returns pointer to Bucket data, deleting the header_map will delete this.
 const char* CHTTP_header_map_find(CHTTP_header_map*, const char* key);
-
+char* CHTTP_header_map_generate(CHTTP_header_map*);
 
 
 

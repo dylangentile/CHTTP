@@ -19,7 +19,7 @@ typedef enum
 
 
 
-typedef struct CHTTP_http_server
+typedef struct CHTTP_server
 {
 //public:
     uint16_t port;
@@ -27,30 +27,35 @@ typedef struct CHTTP_http_server
 //private: //these are pretend since it is 'C'
     void* sock;
     CHTTP_hash_map* handle_map;
-}CHTTP_http_server;
+}CHTTP_server;
 
 
 typedef struct CHTTP_request
 {
     CHTTP_header_map* header_map;
+    CHTTP_hash_map* GET;
+
     HTTP_Method method;
     const char* location;
+    const char* content;
 }CHTTP_request;
 
 typedef struct CHTTP_response
 {
     CHTTP_header_map* header_map;
+    void* content;
+    uint32_t contentLength;
+    bool freeContent;
 }CHTTP_response;
 
 
 
 
-void CHTTP_addHandle(CHTTP_http_server*, const char*, void (*)(CHTTP_http_server*, CHTTP_request*));
-void CHTTP_runServer(CHTTP_http_server*);
-void CHTTP_respond(CHTTP_http_server*, CHTTP_request*, CHTTP_response*);
+void CHTTP_addHandle(CHTTP_server*, const char*, void (*)(CHTTP_server*, CHTTP_request*, CHTTP_response*));
+void CHTTP_runServer(CHTTP_server*);
 
-CHTTP_http_server* CHTTP_http_server_allocate(uint16_t);
-void CHTTP_http_server_delete(CHTTP_http_server*);
+CHTTP_server* CHTTP_server_allocate(uint16_t);
+void CHTTP_server_delete(CHTTP_server*);
 
 
 
